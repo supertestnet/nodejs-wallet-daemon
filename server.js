@@ -210,7 +210,6 @@ async function getAvailableUtxosFromChangePath() {
 async function checkAddresses() {
         var first_unused_receive_address = await getFirstUnusedAddress();
         var first_unused_change_address = await getFirstUnusedChangeAddress();
-        console.log( "first unused addresses:", first_unused_receive_address, first_unused_change_address );
         var available_utxos_1 = await getAvailableUtxosFromReceivePath();
         var available_utxos_2 = await getAvailableUtxosFromChangePath();
         available_utxos_2.forEach( function( item ) {
@@ -221,7 +220,6 @@ async function checkAddresses() {
 
 async function didThisAddressEverHaveMoney( address ) {
         var json = await makeGetRequest( "https://mempool.space/testnet/api/address/" + address );
-        console.log( "number of incoming utxos for", address + ":", json[ "chain_stats" ][ "funded_txo_count" ] );
         if ( json[ "chain_stats" ][ "funded_txo_count" ] > 0 || json[ "mempool_stats" ][ "funded_txo_count" ] > 0 ) {
             return true;
         }
