@@ -1,7 +1,3 @@
-var inputs = process.argv.slice(1);
-var the_privkey = inputs[1];
-var the_password = inputs[2];
-
 const http = require( 'http' );
 const bitcoinjs = require( 'bitcoinjs-lib' );
 const { ECPairFactory } = require( 'ecpair' );
@@ -9,11 +5,59 @@ const crypto = require( 'crypto' );
 const ecc = require( 'tiny-secp256k1' );
 const axios = require( 'axios' );
 const varuintBitcoin = require( 'varuint-bitcoin' );
+const bip32Factory = require( 'bip32' );
+const { BIP32Factory, BIP32Interface } = require( 'bip32' );
+const bip32 = BIP32Factory( ecc );
+const bip39 = require( 'bip39' );
 const ECPair = ECPairFactory( ecc );
 const url = require( 'url' );
-const global_privkey = the_privkey;
-const global_password = the_password;
 const fs = require( 'fs' );
+
+class ls {
+        constructor(content) {
+                this.content = {}
+        }
+        setContent( key, value ) {
+                this.content[ key ] = value;
+                var texttowrite = JSON.stringify( this.content );
+                fs.writeFileSync( "localStorage.txt", texttowrite, function() {return;});
+        }
+}
+
+var localStorage = new ls();
+
+if ( !fs.existsSync( "localStorage.txt" ) ) {
+        var texttowrite = JSON.stringify( localStorage.content );
+        fs.writeFileSync( "localStorage.txt", texttowrite, function() {return;});
+} else {
+        var lstext = fs.readFileSync( "localStorage.txt" ).toString();
+        localStorage.content = JSON.parse( lstext );
+}
+
+if ( !localStorage.content[ "backup_words" ] ) {
+        localStorage.setContent( "backup_words", bip39.generateMnemonic() );
+}
+if ( !localStorage.content[ "index-of-first-known-unused-receive-address" ] ) {
+        localStorage.setContent( "index-of-first-known-unused-receive-address", 0 );
+}
+if ( !localStorage.content[ "index-of-first-known-unused-change-address" ] ) {
+        localStorage.setContent( "index-of-first-known-unused-change-address", 0 );
+}
+
+if ( !fs.existsSync( "db.txt" ) ) {
+        var db = [];
+        var texttowrite = JSON.stringify( db );
+        fs.writeFileSync( "db.txt", texttowrite, function() {return;});
+}
+
+if ( !fs.existsSync( "password.txt" ) ) {
+        var global_password = ECPair.makeRandom().privateKey.toString( "hex" );
+        console.log( "global password is:", global_password );
+        fs.writeFileSync( "password.txt", global_password, function() {return;});
+} else {
+        var global_password = fs.readFileSync( "password.txt" ).toString();
+        console.log( "global password is:", global_password );
+}
 
 function makeGetRequest( url ) {
         return new Promise( function( resolve, reject ) {
@@ -25,11 +69,13 @@ function makeGetRequest( url ) {
         });
 }
 
-function makePostRequest( url, json ) {
+function postData( url, json ) {
         return new Promise( function( resolve, reject ) {
                 axios.post( url, json )
                 .then( res => {
-                  resolve( res.data );
+                        resolve( res.data );
+                }).catch( function( error ) {
+                        console.log( error.message );
                 });
         });
 }
@@ -39,7 +85,31 @@ function getCompressedPubkeyHexFromPrivkeyHex( privkeyhex ) {
 }
 
 function getNativeSegwitAddressFromPrivkeyHex( privkeyhex ) {
-        return bitcoinjs.payments.p2wpkh({ pubkey: ECPair.fromPrivateKey( Buffer.from( privkeyhex, "hex" ), { network: bitcoinjs.networks.testnet } ).publicKey, network: bitcoinjs.networks.$
+        return bitcoinjs.payments.p2wpkh({ pubkey: ECPair.fromPrivateKey( Buffer.from( privkeyhex, "hex" ), { network: bitcoinjs.networks.testnet } ).publicKey, network: bitcoinjs.networks.testnet }).address;
+}
+
+function computeRawPrivkey( node ) {
+    return ECPair.fromPrivateKey( node.privateKey, { network: bitcoinjs.networks.testnet } ).__D.toString( "hex" );
+}
+
+function getNativeSegwitAddressFromPrivkeyHex( privkeyhex ) {
+    return bitcoinjs.payments.p2wpkh({ pubkey: ECPair.fromPrivateKey( Buffer.from( privkeyhex, "hex" ), { network: bitcoinjs.networks.testnet } ).publicKey, network: bitcoinjs.networks.testnet }).address;
+}
+
+function getPrivkeyHexFromPath( backupwords, path, index ) {
+    //standard segwit path is m/84'/0'/0'/0 so “path” should be 84'/0'/0' and “index” 0
+    var seed = bip39.mnemonicToSeedSync( backupwords );
+    var node = bip32.fromSeed( seed );
+    var path = "m/" + path + "/" + index;
+    var root = node;
+    var child = root.derivePath( path );
+    return computeRawPrivkey( child );
+}
+
+function getAddressFromPath( backupwords, path, index ) {
+    var privkey = getPrivkeyHexFromPath( backupwords, path, index );
+    var address = getNativeSegwitAddressFromPrivkeyHex( privkey );
+    return address;
 }
 
 async function getUTXOs( privkey ) {
@@ -57,6 +127,116 @@ async function getUTXOs( privkey ) {
                 obj.push( utxo );
         });
         return( obj );
+}
+
+async function getAddressBalance( address ) {
+        var json = await makeGetRequest( "https://mempool.space/testnet/api/address/" + address );
+        var fullincome = json[ "chain_stats" ][ "funded_txo_sum" ] + json[ "mempool_stats" ][ "funded_txo_sum" ];
+        var fulloutgo = json[ "chain_stats" ][ "spent_txo_sum" ] + json[ "mempool_stats" ][ "spent_txo_sum" ];
+        return fullincome - fulloutgo;
+}
+
+async function getAvailableUtxosFromReceivePath() {
+    return new Promise( async function( resolve, reject ) {
+        var available_utxos = [];
+        var i1 = 0;
+        var i2 = 0;
+        var i; for ( i=0; i<100000; i++ ) {
+            var starting_index = Number( localStorage.content[ "index-of-first-known-unused-receive-address" ] );
+            var starting_change_index = Number( localStorage.content[ "index-of-first-known-unused-change-address" ] );
+            if ( i2 > starting_index + 20 ) {
+                    break;
+            }
+            var backupwords = localStorage.content[ "backup_words" ];
+            var path = "84'/0'/0'";
+            var privkey = getPrivkeyHexFromPath( backupwords, path, i1 + i2 );
+            var address = getNativeSegwitAddressFromPrivkeyHex( privkey );
+            var balance = await getAddressBalance( address );
+            if ( balance < 1 ) {
+                i2 = Number( i2 ) + 1;
+            } else {
+                i1 = Number( i1 ) + 1;
+                var utxos_in_this_address = await getUTXOs( privkey );
+                available_utxos.push( utxos_in_this_address );
+            }
+        }
+        resolve( available_utxos );
+    });
+}
+
+async function getAvailableUtxosFromChangePath() {
+    return new Promise( async function( resolve, reject ) {
+        var available_utxos = [];
+        var i1 = 0;
+        var i2 = 0;
+        var i; for ( i=0; i<100000; i++ ) {
+            var starting_index = Number( localStorage.content[ "index-of-first-known-unused-receive-address" ] );
+            var starting_change_index = Number( localStorage.content[ "index-of-first-known-unused-change-address" ] );
+            if ( i2 > starting_change_index + 20 ) {
+                break;
+            }
+            var backupwords = localStorage.content[ "backup_words" ];
+            var path = "84'/0'/1'";
+            var privkey = getPrivkeyHexFromPath( backupwords, path, i1 + i2 );
+            var address = getNativeSegwitAddressFromPrivkeyHex( privkey );
+            var balance = await getAddressBalance( address );
+            if ( balance < 1 ) {
+                i2 = Number( i2 ) + 1;
+            } else {
+                i1 = Number( i1 ) + 1;
+                var utxos_in_this_address = await getUTXOs( privkey );
+                available_utxos.push( utxos_in_this_address );
+            }
+        }
+        resolve( available_utxos );
+    });
+}
+
+async function checkAddresses() {
+        var available_utxos_1 = await getAvailableUtxosFromReceivePath();
+        var available_utxos_2 = await getAvailableUtxosFromChangePath();
+        available_utxos_2.forEach( function( item ) {
+                available_utxos_1.push( item );
+        });
+        localStorage.setContent( "utxos", JSON.stringify( available_utxos_1 ) );
+}
+
+async function didThisAddressEverHaveMoney( address ) {
+        var json = await makeGetRequest( "https://mempool.space/testnet/api/address/" + address );
+        if ( json[ "chain_stats" ][ "funded_txo_count" ] > 0 || json[ "mempool_stats" ][ "funded_txo_count" ] > 0 ) {
+            return true;
+        }
+        return;
+}
+
+async function getFirstUnusedAddress() {
+    var starting_index = Number( localStorage.content[ "index-of-first-known-unused-receive-address" ] );
+    var i; for ( i=starting_index; i<100000; i++ ) {
+        var backupwords = localStorage.content[ "backup_words" ];
+        var path = "84'/0'/0'";
+        var privkey = getPrivkeyHexFromPath( backupwords, path, i );
+        var address = getNativeSegwitAddressFromPrivkeyHex( privkey );
+        var hadMoney = await didThisAddressEverHaveMoney( address );
+        if ( !hadMoney ) {
+            localStorage.setContent( "index-of-first-known-unused-receive-address", i );
+            return address;
+        }
+    }
+}
+
+async function getFirstUnusedChangeAddress() {
+    var starting_index = Number( localStorage.content[ "index-of-first-known-unused-change-address" ] );
+    var i; for ( i=starting_index; i<100000; i++ ) {
+        var backupwords = localStorage.content[ "backup_words" ];
+        var path = "84'/0'/1'";
+        var privkey = getPrivkeyHexFromPath( backupwords, path, i );
+        var address = getNativeSegwitAddressFromPrivkeyHex( privkey );
+        var hadMoney = await didThisAddressEverHaveMoney( address );
+        if ( !hadMoney ) {
+            localStorage.setContent( "index-of-first-known-unused-change-address", i );
+            return address;
+        }
+    }
 }
 
 function witnessStackToScriptWitness(witness) {
@@ -109,22 +289,12 @@ function generateHtlcWithUserTimelocked( serverPubkey, userPubkey, pmthash, time
 
 //3. Define a variable “utxos_available_for_this_transaction” whose value is equal to the full utxo set owned by the wallet and a variable “utxos_in_this_transaction” whose value is equal t$
 
-//Steps 4 through 9 are in the following function “addUtxosToTx”
+//Steps 4 through 9 are in the function “addUtxosToTx”
 
-function pushBTCpmt( rawtx ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-        if ( this.readyState == 4 && ( this.status > 199 && this.status < 300 ) ) {
-            var response = this.responseText;
-            console.log( "Your transaction was broadcasted, your txid is: " + response );
-        } else {
-            if ( this.status > 299 ) {
-                console.log( "error with payment:", this.statusText );
-            }
-        }
-    };
-    xhttp.open( "POST", "https://blockstream.info/testnet/api/tx", true );
-    xhttp.send( rawtx );
+async function pushBTCpmt( rawtx ) {
+        var success = await postData( "https://mempool.space/testnet/api/tx/", rawtx );
+        console.log( success );
+        return success;
 }
 
 function craftTransaction( selected_utxos, to_amount, to_address, change_address, change_amount, sats_per_byte ) {
@@ -139,7 +309,7 @@ function craftTransaction( selected_utxos, to_amount, to_address, change_address
                         hash: selected_utxos[ i ][ "tx_id" ],
                         index: selected_utxos[ i ][ "output_number" ],
                         witnessUtxo: {
-                                script: Buffer.from( '0014' + bitcoinjs.crypto.ripemd160( bitcoinjs.crypto.sha256( Buffer.from( selected_utxos[ i ][ "pubkey" ], "hex" ) ) ).toString( 'hex' $
+                                script: Buffer.from( '0014' + bitcoinjs.crypto.ripemd160( bitcoinjs.crypto.sha256( Buffer.from( selected_utxos[ i ][ "pubkey" ], "hex" ) ) ).toString( 'hex' ), 'hex' ),
                                 value: selected_utxos[ i ][ "amount" ],
                         },
                    });
@@ -172,7 +342,7 @@ function craftTransaction( selected_utxos, to_amount, to_address, change_address
                         hash: selected_utxos[ i ][ "tx_id" ],
                         index: selected_utxos[ i ][ "output_number" ],
                         witnessUtxo: {
-                                script: Buffer.from( '0014' + bitcoinjs.crypto.ripemd160( bitcoinjs.crypto.sha256( Buffer.from( selected_utxos[ i ][ "pubkey" ], "hex" ) ) ).toString( 'hex' $
+                                script: Buffer.from( '0014' + bitcoinjs.crypto.ripemd160( bitcoinjs.crypto.sha256( Buffer.from( selected_utxos[ i ][ "pubkey" ], "hex" ) ) ).toString( 'hex' ), 'hex' ),
                                 value: selected_utxos[ i ][ "amount" ],
                         },
                    });
@@ -254,7 +424,7 @@ function addUtxosToTx( amount_plus_fee, utxos_available_for_this_transaction, ut
                                         new_amount_plus_fee = amount_plus_fee + ( 50*sats_per_byte );
 //                                        console.log( "original utxos available:", JSON.parse( original_utxos_available_for_this_transaction ) );
 //                                        console.log( "original utxos in this tx:", JSON.parse( original_utxos_in_this_transaction ) );
-                                        return addUtxosToTx( new_amount_plus_fee, JSON.parse( original_utxos_available_for_this_transaction ), JSON.parse( original_utxos_in_this_transaction$
+                                        return addUtxosToTx( new_amount_plus_fee, JSON.parse( original_utxos_available_for_this_transaction ), JSON.parse( original_utxos_in_this_transaction ), sats_per_byte, true );
                                 } else {
                                         var we_need_a_change_address = false;
                                 }
@@ -284,7 +454,7 @@ function addUtxosToTx( amount_plus_fee, utxos_available_for_this_transaction, ut
         }
 }
 
-function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utxos_available_for_this_transaction, utxos_in_this_transaction ) {
+async function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utxos_available_for_this_transaction, utxos_in_this_transaction ) {
 //        console.log( "to amount", toamount );
 //        console.log( "sats per byte", sats_per_byte );
         var amount_plus_fee = toamount + ( 150 * sats_per_byte );
@@ -301,7 +471,7 @@ function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utxos_ava
         if ( array[ 5 ] ) {
                 var change_amount = array[ 3 ];
 //                console.log( "change_amount", change_amount );
-                var change_address = getNativeSegwitAddressFromPrivkeyHex( global_privkey );
+                var change_address = await getFirstUnusedChangeAddress();
         } else {
                 var change_amount = 0;
                 var change_address = "none";
@@ -322,7 +492,7 @@ function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utxos_ava
 //        console.log( original_utxos_available_for_this_transaction );
 //        console.log( JSON.parse( original_utxos_available_for_this_transaction ) );
 //        console.log( "I will also check what the original utxos in the transaction are", JSON.parse( original_utxos_in_this_transaction ) );
-        var new_array = addUtxosToTx( new_amount_plus_fee, JSON.parse( original_utxos_available_for_this_transaction ), JSON.parse( original_utxos_in_this_transaction ), sats_per_byte, fals$
+        var new_array = addUtxosToTx( new_amount_plus_fee, JSON.parse( original_utxos_available_for_this_transaction ), JSON.parse( original_utxos_in_this_transaction ), sats_per_byte, false );
         var new_adjusted_utxos_available_for_this_transaction = new_array[ 0 ];
         var new_adjusted_utxos_in_this_transaction = new_array[ 1 ];
         new_amount_plus_fee = new_array[ 2 ];
@@ -339,6 +509,12 @@ function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utxos_ava
                 console.log( "I tried to craft your transaction twice and I kept getting errors. Please contact the developer of this wallet for assistance." );
         }
 }
+
+async function syncUtxosOnLoop() {
+        await checkAddresses();
+        syncUtxosOnLoop();
+}
+syncUtxosOnLoop();
 
 var sendResponse = ( response, data, statusCode ) => {
   response.setHeader( 'Access-Control-Allow-Origin', '*' );
@@ -363,42 +539,50 @@ const requestListener = async function( request, response ) {
   var parts = url.parse( request.url, true );
   var gets = parts.query;
   var password = gets.password;
-  if ( password != global_password ) {return;}
-  var to_address = gets.address;
-  var dbtext = fs.readFileSync( "db.txt" ).toString();
-  var db = JSON.parse( dbtext );
-  var current_time = Math.floor( Date.now() / 1000 );
-  var current_time_plus_24_hours = Number( current_time ) + 86400;
-  db.forEach( function( item, index ) {
-    if ( current_time > item[ 1 ] ) {
-      db.splice( index, 1 );
-    }
-  });
-  var i; for ( i=0; i<db.length; i++ ) {
-    console.log( "address I've already sent money to:", db[ i ][ 0 ] );
-    console.log( "address I'm asked to send money to:", to_address );
-    console.log( "I should ignore the request, right?", db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" );
-    if ( db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" ) {
-      return;
-    }
+  if ( password != global_password ) {
+        sendResponse( response, "wrong password", 200, {'Content-Type': 'text/plain'} );
+        return;
   }
-//  console.log( to_address );
-  var sats_per_byte = 1;
-  var amount_to_send = Number( gets.amount );
-  var amount_plus_fee = amount_to_send + ( 150 * sats_per_byte );
-//  console.log( "the amount plus the mining fee -- assuming no inputs -- is", amount_plus_fee );
-  var utxos_to_put_in = await getUTXOs( global_privkey );
-  var utxos_to_get_out = [];
-  var txhex = sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
-  if ( !txhex || txhex == "" ) {return;}
-  var newitem = [];
-  newitem.push( to_address );
-  newitem.push( current_time_plus_24_hours );
-  db.push ( newitem );
-  var texttowrite = JSON.stringify( db );
-  fs.writeFileSync( "db.txt", texttowrite, function() {return;});
-  var request = await makePostRequest( "https://blockstream.info/testnet/api/tx", txhex.toString() );
-  sendResponse( response, request, 200, {'Content-Type': 'text/plain'} );
+  if ( parts.path.startsWith( "/newaddress" ) ) {
+        var first_unused_address = await getFirstUnusedAddress();
+        sendResponse( response, first_unused_address, 200, {'Content-Type': 'text/plain'} );
+  } else {
+        var to_address = gets.address;
+        var dbtext = fs.readFileSync( "db.txt" ).toString();
+        var db = JSON.parse( dbtext );
+        var current_time = Math.floor( Date.now() / 1000 );
+        var current_time_plus_24_hours = Number( current_time ) + 86400;
+        db.forEach( function( item, index ) {
+                if ( current_time > item[ 1 ] ) {
+                        db.splice( index, 1 );
+                }
+        });
+        var i; for ( i=0; i<db.length; i++ ) {
+            console.log( "address I've already sent money to:", db[ i ][ 0 ] );
+            console.log( "address I'm asked to send money to:", to_address );
+            console.log( "I should ignore the request, right?", db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" );
+            if ( db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" ) {
+                return;
+            }
+        }
+        //  console.log( to_address );
+        var sats_per_byte = 1;
+        var amount_to_send = Number( gets.amount );
+        var amount_plus_fee = amount_to_send + ( 150 * sats_per_byte );
+        //  console.log( "the amount plus the mining fee -- assuming no inputs -- is", amount_plus_fee );
+        var utxos_to_put_in = localStorage.content[ "utxos" ];
+        var utxos_to_get_out = [];
+        var txhex = sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
+        if ( !txhex || txhex == "" ) {return;}
+        var newitem = [];
+        newitem.push( to_address );
+        newitem.push( current_time_plus_24_hours );
+        db.push ( newitem );
+        var texttowrite = JSON.stringify( db );
+        fs.writeFileSync( "db.txt", texttowrite, function() {return;});
+        var request = pushBTCpmt( txhex.toString() );
+        sendResponse( response, request, 200, {'Content-Type': 'text/plain'} );
+  }
 };
 
 const server = http.createServer( requestListener );
