@@ -1,5 +1,3 @@
-//remember to run this: npm install bitcoinjs-lib ecpair tiny-secp256k1 axios varuint-bitcoin bip32 bip39
-
 const http = require( 'http' );
 const bitcoinjs = require( 'bitcoinjs-lib' );
 const { ECPairFactory } = require( 'ecpair' );
@@ -314,7 +312,6 @@ function generateHtlcWithUserTimelocked( serverPubkey, userPubkey, pmthash, time
 
 async function pushBTCpmt( rawtx ) {
         var success = await postData( "https://blockstream.info/testnet/api/tx", rawtx );
-        console.log( success );
         return success;
 }
 
@@ -592,7 +589,6 @@ const requestListener = async function( request, response ) {
         var amount_plus_fee = amount_to_send + ( 150 * sats_per_byte );
         //  console.log( "the amount plus the mining fee -- assuming no inputs -- is", amount_plus_fee );
         var utxos_to_put_in = JSON.parse( localStorage.content[ "utxos" ] );
-        console.log( utxos_to_put_in );
         var utxos_to_get_out = [];
         var txhex = await sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
         if ( !txhex || txhex == "" ) {return;}
@@ -603,7 +599,6 @@ const requestListener = async function( request, response ) {
         var texttowrite = JSON.stringify( db );
         fs.writeFileSync( "db.txt", texttowrite, function() {return;});
         var request = await pushBTCpmt( txhex.toString() );
-        console.log( "sent!", request );
         sendResponse( response, request, 200, {'Content-Type': 'text/plain'} );
   }
 };
