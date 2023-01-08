@@ -577,7 +577,7 @@ const requestListener = async function( request, response ) {
             console.log( "address I've already sent money to:", db[ i ][ 0 ] );
             console.log( "address I'm asked to send money to:", to_address );
             console.log( "I should ignore the request, right?", db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" );
-            if ( db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address || db[ i ][ 0 ] == "undefined" || to_address == "undefined" ) {
+            if ( db[ i ][ 0 ] == to_address || !db[ i ][ 0 ] || !to_address ) {
                 return;
             }
         }
