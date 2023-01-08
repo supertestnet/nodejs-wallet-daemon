@@ -15,6 +15,6 @@ The server will spit out a password and start listening for traffic on localhost
 
 Get an unused address: http://localhost:8087/newaddress?password=YOUR_PASSWORD.
 
-Send money: http://localhost:8087/?address=tb1qualwxge0zk2a826msftgcfv9ea7mtuzchtm46x&am&amount=546&password=YOUR_PASSWORD
+Send money: http://localhost:8087/?address=tb1qualwxge0zk2a826msftgcfv9ea7mtuzchtm46x&amount=546&password=YOUR_PASSWORD
 
 The amount must be denominated in sats.
