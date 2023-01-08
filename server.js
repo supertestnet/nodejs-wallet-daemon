@@ -1,3 +1,5 @@
+//remember to run this: npm install bitcoinjs-lib ecpair tiny-secp256k1 axios varuint-bitcoin bip32 bip39
+
 const http = require( 'http' );
 const bitcoinjs = require( 'bitcoinjs-lib' );
 const { ECPairFactory } = require( 'ecpair' );
@@ -52,11 +54,11 @@ if ( !fs.existsSync( "db.txt" ) ) {
 
 if ( !fs.existsSync( "password.txt" ) ) {
         var global_password = ECPair.makeRandom().privateKey.toString( "hex" );
-        console.log( "global password is:", global_password );
+        console.log( "the password is:", global_password );
         fs.writeFileSync( "password.txt", global_password, function() {return;});
 } else {
         var global_password = fs.readFileSync( "password.txt" ).toString();
-        console.log( "global password is:", global_password );
+        console.log( "the password is:", global_password );
 }
 
 function makeGetRequest( url ) {
@@ -75,7 +77,18 @@ function postData( url, json ) {
                 .then( res => {
                         resolve( res.data );
                 }).catch( function( error ) {
-                        console.log( error.message );
+                        console.log( "oh no!", error.message );
+                });
+        });
+}
+
+function makePostRequest( url, json ) {
+        return new Promise( function( resolve, reject ) {
+                axios.post( url, json )
+                .then( res => {
+                        resolve( res.data );
+                }).catch( function( error ) {
+                        console.log( "oh no!", error.message );
                 });
         });
 }
@@ -157,7 +170,9 @@ async function getAvailableUtxosFromReceivePath() {
             } else {
                 i1 = Number( i1 ) + 1;
                 var utxos_in_this_address = await getUTXOs( privkey );
-                available_utxos.push( utxos_in_this_address );
+                utxos_in_this_address.forEach( function( item ) {
+                        available_utxos.push( item );
+                });
             }
         }
         resolve( available_utxos );
@@ -185,7 +200,9 @@ async function getAvailableUtxosFromChangePath() {
             } else {
                 i1 = Number( i1 ) + 1;
                 var utxos_in_this_address = await getUTXOs( privkey );
-                available_utxos.push( utxos_in_this_address );
+                utxos_in_this_address.forEach( function( item ) {
+                        available_utxos.push( item );
+                });
             }
         }
         resolve( available_utxos );
@@ -193,6 +210,9 @@ async function getAvailableUtxosFromChangePath() {
 }
 
 async function checkAddresses() {
+        var first_unused_receive_address = await getFirstUnusedAddress();
+        var first_unused_change_address = await getFirstUnusedChangeAddress();
+        console.log( "first unused addresses:", first_unused_receive_address, first_unused_change_address );
         var available_utxos_1 = await getAvailableUtxosFromReceivePath();
         var available_utxos_2 = await getAvailableUtxosFromChangePath();
         available_utxos_2.forEach( function( item ) {
@@ -203,6 +223,7 @@ async function checkAddresses() {
 
 async function didThisAddressEverHaveMoney( address ) {
         var json = await makeGetRequest( "https://mempool.space/testnet/api/address/" + address );
+        console.log( "number of incoming utxos for", address + ":", json[ "chain_stats" ][ "funded_txo_count" ] );
         if ( json[ "chain_stats" ][ "funded_txo_count" ] > 0 || json[ "mempool_stats" ][ "funded_txo_count" ] > 0 ) {
             return true;
         }
@@ -292,7 +313,7 @@ function generateHtlcWithUserTimelocked( serverPubkey, userPubkey, pmthash, time
 //Steps 4 through 9 are in the function “addUtxosToTx”
 
 async function pushBTCpmt( rawtx ) {
-        var success = await postData( "https://mempool.space/testnet/api/tx/", rawtx );
+        var success = await postData( "https://blockstream.info/testnet/api/tx", rawtx );
         console.log( success );
         return success;
 }
@@ -570,9 +591,10 @@ const requestListener = async function( request, response ) {
         var amount_to_send = Number( gets.amount );
         var amount_plus_fee = amount_to_send + ( 150 * sats_per_byte );
         //  console.log( "the amount plus the mining fee -- assuming no inputs -- is", amount_plus_fee );
-        var utxos_to_put_in = localStorage.content[ "utxos" ];
+        var utxos_to_put_in = JSON.parse( localStorage.content[ "utxos" ] );
+        console.log( utxos_to_put_in );
         var utxos_to_get_out = [];
-        var txhex = sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
+        var txhex = await sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
         if ( !txhex || txhex == "" ) {return;}
         var newitem = [];
         newitem.push( to_address );
@@ -580,7 +602,8 @@ const requestListener = async function( request, response ) {
         db.push ( newitem );
         var texttowrite = JSON.stringify( db );
         fs.writeFileSync( "db.txt", texttowrite, function() {return;});
-        var request = pushBTCpmt( txhex.toString() );
+        var request = await pushBTCpmt( txhex.toString() );
+        console.log( "sent!", request );
         sendResponse( response, request, 200, {'Content-Type': 'text/plain'} );
   }
 };
