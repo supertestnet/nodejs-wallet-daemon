@@ -385,7 +385,7 @@ function craftTransaction( selected_utxos, to_amount, to_address, change_address
 }
 
 function addUtxosToTx( amount_plus_fee, utxos_available_for_this_transaction, utxos_in_this_transaction, sats_per_byte, this_addition_is_being_done_because_of_a_change_address = false ) {   
-        if ( !amount_plus_fee || amount_plus_fee == "" ) {
+        if ( !amount_plus_fee ) {
                 return;   
         }
         var original_utxos_available_for_this_transaction = JSON.stringify( utxos_available_for_this_transaction );
@@ -480,7 +480,7 @@ async function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utx
         var original_utxos_available_for_this_transaction = JSON.stringify( utxos_available_for_this_transaction );
         var original_utxos_in_this_transaction = JSON.stringify( utxos_in_this_transaction );
         var array = addUtxosToTx( amount_plus_fee, utxos_available_for_this_transaction, utxos_in_this_transaction, sats_per_byte, false );
-        if ( !array || array == "" ) {
+        if ( !array ) {
                 return;
         }
         var adjusted_utxos_available_for_this_transaction = array[ 0 ];
@@ -499,9 +499,7 @@ async function sendFromUtxoSetToAddress( toamount, toaddress, sats_per_byte, utx
 //        console.log( "amount_plus_fee", amount_plus_fee );
         var txhex = craftTransaction( adjusted_utxos_in_this_transaction, toamount, toaddress, change_address, change_amount, sats_per_byte );
 //        console.log( txhex );
-        if ( !txhex || txhex == "" ) {
-                return;
-        }
+        if ( !txhex ) return;
         var tx = bitcoinjs.Transaction.fromHex( txhex );
         var virtual_bytes = tx.virtualSize();
         var real_fee = virtual_bytes * sats_per_byte;
@@ -591,14 +589,14 @@ const requestListener = async function( request, response ) {
         var utxos_to_put_in = JSON.parse( localStorage.content[ "utxos" ] );
         var utxos_to_get_out = [];
         var txhex = await sendFromUtxoSetToAddress( amount_to_send, to_address, sats_per_byte, utxos_to_put_in, utxos_to_get_out );
-        if ( !txhex || txhex == "" ) {return;}
+        if ( !txhex ) return;
+        var request = await pushBTCpmt( txhex.toString() );
         var newitem = [];
         newitem.push( to_address );
         newitem.push( current_time_plus_24_hours );
         db.push ( newitem );
         var texttowrite = JSON.stringify( db );
         fs.writeFileSync( "db.txt", texttowrite, function() {return;});
-        var request = await pushBTCpmt( txhex.toString() );
         sendResponse( response, request, 200, {'Content-Type': 'text/plain'} );
   }
 };
